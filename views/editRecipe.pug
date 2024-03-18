@@ -1,0 +1,21 @@
+doctype html
+html(lang="en")
+    head
+        meta(charset="UTF-8")
+        meta(http-equiv="X-UA-Compatible", content="IE=edge")
+        meta(name="viewport", content="width=device-width, initial-scale=1.0")
+        title Document
+    body
+        .container
+            form(action='/recipes/' + recipe._id + '/update',method='POST')
+                input(type="hidden", name="_id" value=recipe._id)
+                input(name='name', value=recipe.name)
+                //#input.difficulty= recipe.difficulty
+                select(name='difficulty')
+                    each difficulty in difficultyEnum
+                        if difficulty == recipe.difficulty
+                            option(value=difficulty selected)= difficulty
+                        else
+                            option(value=difficulty)= difficulty
+                button.btn(type='submit') Update
+                

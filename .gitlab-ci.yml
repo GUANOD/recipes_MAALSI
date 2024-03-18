@@ -1,0 +1,155 @@
+include:
+  - template: Security/Secret-Detection.gitlab-ci.yml
+  - template: Security/SAST.gitlab-ci.yml
+  - template: Code-Quality.gitlab-ci.yml
+
+stages:
+  - test
+  - deploy
+  
+unit-tests:
+  image: node
+  stage: test
+  script:
+    - npm i -D
+    - npm run unit-tests
+  cache:
+    when: on_success
+    paths:
+      - "node_modules"
+  artifacts:
+    when: always
+    reports:
+      junit: unit_tests_report.xml
+
+integ-tests:
+  stage: test
+  image: node
+  script:
+    - npm run integ-tests
+  cache:
+    when: on_success
+    paths:
+      - "node_modules"
+  artifacts:
+    when: always
+    reports:
+      junit: integ_tests_report.xml
+
+e2e-tests:
+  stage: test
+  image: docker
+  services:
+    - name: docker:dind
+        
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_DRIVER: overlay2
+    DB: mongodb://mongodb:27017/recipes
+    SERVER_URL: http://server:4000
+    BROWSER_URL: http://browser:4444
+  script:
+    - docker network create app_network
+    - docker run -d --network app_network -p 27017:27017 --name mongodb mongo
+    - docker run --network app_network willwill/wait-for-it -s -t 60 mongodb:27017 -- echo "mongodb started"
+    - docker build -f app-Dockerfile -t app .
+    - docker run -d -p 4000:4000 --network app_network --name server -e DB=$DB app
+    - docker run --network app_network willwill/wait-for-it -s -t 60 server:4000 -- echo "server is up"
+    - docker run -d -p 4444:4444 --name browser --network app_network selenium/standalone-firefox
+    - docker run --network app_network willwill/wait-for-it -s -t 60 browser:4444 -- echo "browser is up"
+    - >
+        docker run --name tester --network app_network
+        -e DB=$DB -e BROWSER_URL=$BROWSER_URL -e SERVER_URL=$SERVER_URL
+        app sh -c "
+        npm i -D;
+        npm run e2e-tests;
+        exit
+        "
+  after_script:
+    - docker cp tester:/usr/src/app/e2e_tests_report.xml ./
+  artifacts:
+    when: always
+    reports:
+      junit: e2e_tests_report.xml
+
+perfs-tests:
+  stage: test
+  image: docker
+  services:
+    - name: docker:dind
+        
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_DRIVER: overlay2
+    DB: mongodb://mongodb:27017/recipes
+    SERVER_URL: http://server:4000
+  script:
+    - docker network create app_network
+    - docker run -d --network app_network -p 27017:27017 --name mongodb mongo
+    - docker run --network app_network willwill/wait-for-it -s -t 60 mongodb:27017 -- echo "mongodb started"
+    - docker build -f app-Dockerfile -t app .
+    - docker run -d -p 4000:4000 --network app_network --name server -e DB=$DB app sh -c "npm i -D;npm start"
+    - docker run --network app_network willwill/wait-for-it -s -t 60 server:4000 -- echo "server is up"
+    - docker exec -e SERVER_URL=$SERVER_URL server sh -c "npm i -D;npm run perfs-tests"
+  after_script:
+    - docker cp server:/usr/src/app/perfs_tests_report.xml ./
+  artifacts:
+    when: always
+    reports:
+      junit: perfs_tests_report.xml
+  
+secret_detection:
+  stage: test
+
+sast:
+  stage: test
+
+code_quality:
+  rules:
+    - if: $CODE_QUALITY_DISABLED
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event" # Run code quality job in merge request pipelines
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH      # Run code quality job in pipelines on the default branch (but not in other branch pipelines)
+    - if: $CI_COMMIT_TAG
+  variables:
+    REPORT_FORMAT: html
+  artifacts:
+    paths: [code-quality-report.html]
+
+coverage:
+  stage: test
+  image: docker
+  services:
+    - name: docker:dind
+        
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_DRIVER: overlay2
+    DB: mongodb://mongodb:27017/recipes
+    SERVER_URL: http://server:4000
+    BROWSER_URL: http://browser:4444
+  script:
+    - docker network create app_network
+    - docker run -d --network app_network -p 27017:27017 --name mongodb mongo
+    - docker run --network app_network willwill/wait-for-it -s -t 60 mongodb:27017 -- echo "mongodb started"
+    - docker build -f app-Dockerfile -t app .
+    - docker run -d -p 4000:4000 --network app_network --name server -e DB=$DB app
+    - docker run --network app_network willwill/wait-for-it -s -t 60 server:4000 -- echo "server is up"
+    - docker run -d -p 4444:4444 --name browser --network app_network selenium/standalone-firefox
+    - docker run --network app_network willwill/wait-for-it -s -t 60 browser:4444 -- echo "browser is up"
+    - >
+        docker run --name tester --network app_network
+        -e DB=$DB -e BROWSER_URL=$BROWSER_URL -e SERVER_URL=$SERVER_URL
+        app sh -c "
+        npm i -D;
+        npm run coverage-test;
+        exit
+        "
+  after_script:
+    - docker cp tester:/usr/src/app/coverage/cobertura_coverage.xml ./
+  artifacts:
+    when: always
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage/cobertura_coverage.xml
